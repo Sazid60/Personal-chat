@@ -9,9 +9,9 @@ const ASSETS_TO_CACHE = [
   '/manifest.json',
   '/icon-192.svg',
   '/icon-512.svg',
-  '/sounds/call-audio.wav',
-  '/sounds/call-video.wav',
-  '/sounds/message.wav'
+  '/sounds/call-audio.mp3',
+  '/sounds/call-video.mp3',
+  '/sounds/message.mp3'
 ];
 
 let unreadCount = 0;

@@ -20,7 +20,8 @@ import {
   ChevronDown,
   CheckCheck,
   Ban,
-  Monitor,
+  Volume2,
+  Volume1,
   ArrowLeft,
   X,
   ChevronUp,
@@ -34,7 +35,8 @@ import {
   PhoneOff,
   Smile,
   SmilePlus,
-  Sparkles
+  Sparkles,
+  Monitor
 } from 'lucide-react';
 import { User, Conversation, Message, MediaMessage } from './types';
 import { ClientLoginSchema, ClientRegisterSchema } from './validators';
@@ -81,6 +83,8 @@ export function App() {
   const [callSeconds, setCallSeconds] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isLoud, setIsLoud] = useState(false);
+  const isLoudRef = useRef(false);
 
   // Modals & Popups
   const [showNewChatModal, setShowNewChatModal] = useState(false);
@@ -121,6 +125,7 @@ export function App() {
     try {
       const el = callType === 'video' ? videoCallRingtoneRef.current : audioCallRingtoneRef.current;
       if (el) {
+        el.volume = 0.5;
         el.currentTime = 0;
         el.play().catch(() => {});
       }
@@ -143,6 +148,7 @@ export function App() {
   const playMessageTone = () => {
     try {
       if (messageToneRef.current) {
+        messageToneRef.current.volume = 0.45;
         messageToneRef.current.currentTime = 0;
         messageToneRef.current.play().catch(() => {});
       }
@@ -237,8 +243,11 @@ export function App() {
     webrtc.onLocalStreamCallback = (stream) => {
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
     };
-    webrtc.onRemoteStreamCallback = (stream) => {
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+    webrtc.onRemoteStreamCallback = (stream, callType) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = stream;
+        remoteVideoRef.current.volume = (callType === 'video' || isLoudRef.current) ? 1.0 : 0.35;
+      }
     };
     webrtc.onCallEndCallback = () => {
       endCall(false);
@@ -957,6 +966,11 @@ export function App() {
     const targetId = Number(activeConv.peer_id);
     currentCallPeerIdRef.current = targetId;
 
+    const defaultLoud = callType === 'video';
+    setIsLoud(defaultLoud);
+    isLoudRef.current = defaultLoud;
+    setIsVideoOff(callType === 'audio');
+
     setActiveCall({ callType, targetUserId: targetId, name: activeConv.peer_name, status: 'outgoing' });
     socketRef.current?.emit('call_request', { targetUserId: targetId, callType });
     cyberToast.info(`Calling ${activeConv.peer_name}...`, 'SIG_CALL');
@@ -971,6 +985,12 @@ export function App() {
     const { callerId, callerName, callType } = callData;
     const peerId = Number(callerId);
     currentCallPeerIdRef.current = peerId;
+
+    const defaultLoud = callType === 'video';
+    setIsLoud(defaultLoud);
+    isLoudRef.current = defaultLoud;
+    setIsVideoOff(callType === 'audio');
+
     setActiveCall({ callType, targetUserId: peerId, name: callerName, status: 'connected' });
     socketRef.current?.emit('call_response', { callerId: peerId, accepted: true });
     setIncomingCall(null);
@@ -1284,10 +1304,10 @@ export function App() {
   return (
     <div className="whatsapp-layout cyber-layout">
       <Toaster />
-      {/* Audio / Video Call Ringtones & Message Notification Tone */}
-      <audio ref={audioCallRingtoneRef} loop src="/sounds/call-audio.wav" preload="auto" />
-      <audio ref={videoCallRingtoneRef} loop src="/sounds/call-video.wav" preload="auto" />
-      <audio ref={messageToneRef} src="/sounds/message.wav" preload="auto" />
+      {/* Soft Audio / Video Call Ringtones & Message Notification Tone */}
+      <audio ref={audioCallRingtoneRef} loop src="/sounds/call-audio.mp3" preload="auto" />
+      <audio ref={videoCallRingtoneRef} loop src="/sounds/call-video.mp3" preload="auto" />
+      <audio ref={messageToneRef} src="/sounds/message.mp3" preload="auto" />
 
       {/* Left Sidebar */}
       <aside className={`sidebar ${mobileChatOpen ? 'mobile-hidden' : ''}`}>
@@ -1544,7 +1564,14 @@ export function App() {
                             )
                           ) : (
                             <span className="msg-text">
-                              {m.text}
+                              {m.text?.toLowerCase().includes('missed') ? (
+                                <span className="flex items-center gap-1.5 text-red-400 font-semibold">
+                                  <PhoneOff size={15} className="inline flex-shrink-0 text-red-400" />
+                                  <span>{m.text}</span>
+                                </span>
+                              ) : (
+                                m.text
+                              )}
                             </span>
                           )}
 
@@ -1831,7 +1858,12 @@ export function App() {
 
             <div className="video-grid">
               <div className="video-box remote-box">
-                <video ref={remoteVideoRef} autoPlay playsInline className={activeCall.callType === 'audio' ? 'hidden' : ''} />
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  style={activeCall.callType === 'audio' ? { position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' } : {}}
+                />
                 {activeCall.callType === 'audio' && (
                   <div className="audio-avatar">
                     <Headset size={48} />
@@ -1857,23 +1889,42 @@ export function App() {
                   webrtcRef.current?.toggleAudio(!muted);
                   setIsMuted(muted);
                 }}
+                title={isMuted ? 'Unmute' : 'Mute'}
               >
                 <Mic size={20} />
               </button>
+
               <button
-                className={`ctrl-btn ${isVideoOff ? 'off' : ''}`}
+                className={`ctrl-btn ${isLoud ? 'active text-[#00f0ff]' : ''}`}
                 onClick={() => {
-                  const off = !isVideoOff;
-                  webrtcRef.current?.toggleVideo(!off);
-                  setIsVideoOff(off);
+                  const nextLoud = !isLoud;
+                  setIsLoud(nextLoud);
+                  isLoudRef.current = nextLoud;
+                  if (remoteVideoRef.current) {
+                    remoteVideoRef.current.volume = nextLoud ? 1.0 : 0.35;
+                  }
+                  cyberToast.info(nextLoud ? 'Speaker (Loud) ON' : 'Speaker (Normal) ON', 'AUDIO_OUT');
                 }}
+                title={isLoud ? 'Speaker (Loud)' : 'Earpiece (Normal)'}
               >
-                <Video size={20} />
+                {isLoud ? <Volume2 size={20} /> : <Volume1 size={20} />}
               </button>
-              <button className="ctrl-btn" onClick={() => webrtcRef.current?.toggleScreenShare()}>
-                <Monitor size={20} />
-              </button>
-              <button className="ctrl-btn btn-hangup" onClick={() => endCall(true)}>
+
+              {activeCall.callType === 'video' && (
+                <button
+                  className={`ctrl-btn ${isVideoOff ? 'off' : ''}`}
+                  onClick={() => {
+                    const off = !isVideoOff;
+                    webrtcRef.current?.toggleVideo(!off);
+                    setIsVideoOff(off);
+                  }}
+                  title={isVideoOff ? 'Enable Camera' : 'Disable Camera'}
+                >
+                  <Video size={20} />
+                </button>
+              )}
+
+              <button className="ctrl-btn btn-hangup" onClick={() => endCall(true)} title="End Call">
                 <PhoneOff size={20} />
               </button>
             </div>
