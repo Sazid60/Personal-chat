@@ -1,4 +1,3 @@
-import sqlite3 from 'sqlite3';
 import path from 'path';
 import { createClient, Client } from '@libsql/client';
 
@@ -11,25 +10,23 @@ try {
 const tursoUrl = process.env.TURSO_DATABASE_URL;
 const tursoToken = process.env.TURSO_AUTH_TOKEN;
 
-const isTurso = Boolean(tursoUrl && tursoToken);
+let client: Client;
 
-let tursoClient: Client | null = null;
-let sqliteDb: sqlite3.Database | null = null;
-
-if (isTurso) {
+if (tursoUrl && tursoToken) {
   console.log(`[DATABASE] Connecting to Turso Cloud libSQL: ${tursoUrl}`);
-  tursoClient = createClient({
-    url: tursoUrl!,
-    authToken: tursoToken!
+  client = createClient({
+    url: tursoUrl,
+    authToken: tursoToken
   });
 } else {
-  console.log('[DATABASE] Using local SQLite file (chat.db)');
-  const sqlite = sqlite3.verbose();
-  const dbPath = path.join(__dirname, '..', 'chat.db');
-  sqliteDb = new sqlite.Database(dbPath);
+  const localDbPath = path.join(__dirname, '..', 'chat.db');
+  console.log(`[DATABASE] Using local SQLite file via libSQL: file:${localDbPath}`);
+  client = createClient({
+    url: `file:${localDbPath}`
+  });
 }
 
-export const db = sqliteDb;
+export const db = client;
 
 // Initialize tables
 async function initTables() {
@@ -77,26 +74,14 @@ async function initTables() {
     `CREATE INDEX IF NOT EXISTS idx_users_search ON users(email, phone)`
   ];
 
-  if (isTurso && tursoClient) {
-    for (const sql of schemaStatements) {
-      try {
-        await tursoClient.execute(sql);
-      } catch (e) {
-        console.warn('[DATABASE] Schema init statement warning:', e);
-      }
+  for (const sql of schemaStatements) {
+    try {
+      await client.execute(sql);
+    } catch (e) {
+      console.warn('[DATABASE] Schema init statement warning:', e);
     }
-    console.log('[DATABASE] Turso Cloud schema verified ✓');
-  } else if (sqliteDb) {
-    sqliteDb.serialize(() => {
-      sqliteDb.run('PRAGMA journal_mode = WAL');
-      sqliteDb.run('PRAGMA auto_vacuum = INCREMENTAL');
-      for (const sql of schemaStatements) {
-        sqliteDb.run(sql);
-      }
-      sqliteDb.run('ALTER TABLE messages ADD COLUMN is_read INTEGER DEFAULT 0', () => {});
-    });
-    console.log('[DATABASE] Local SQLite schema verified ✓');
   }
+  console.log('[DATABASE] Database schema verified ✓');
 }
 
 initTables().catch(err => {
@@ -105,33 +90,15 @@ initTables().catch(err => {
 
 export const dbAsync = {
   get: async <T = any>(sql: string, params: any[] = []): Promise<T | undefined> => {
-    if (isTurso && tursoClient) {
-      const res = await tursoClient.execute({ sql, args: params });
-      return (res.rows[0] as unknown as T) || undefined;
-    }
-    return new Promise((resolve, reject) => {
-      sqliteDb!.get(sql, params, (err, row) => (err ? reject(err) : resolve(row as T)));
-    });
+    const res = await client.execute({ sql, args: params });
+    return (res.rows[0] as unknown as T) || undefined;
   },
   all: async <T = any>(sql: string, params: any[] = []): Promise<T[]> => {
-    if (isTurso && tursoClient) {
-      const res = await tursoClient.execute({ sql, args: params });
-      return res.rows as unknown as T[];
-    }
-    return new Promise((resolve, reject) => {
-      sqliteDb!.all(sql, params, (err, rows) => (err ? reject(err) : resolve((rows || []) as T[])));
-    });
+    const res = await client.execute({ sql, args: params });
+    return res.rows as unknown as T[];
   },
   run: async (sql: string, params: any[] = []): Promise<{ lastID: number; changes: number }> => {
-    if (isTurso && tursoClient) {
-      const res = await tursoClient.execute({ sql, args: params });
-      return { lastID: Number(res.lastInsertRowid ?? 0), changes: res.rowsAffected };
-    }
-    return new Promise((resolve, reject) => {
-      sqliteDb!.run(sql, params, function (this: sqlite3.RunResult, err: Error | null) {
-        if (err) return reject(err);
-        resolve({ lastID: this.lastID, changes: this.changes });
-      });
-    });
+    const res = await client.execute({ sql, args: params });
+    return { lastID: Number(res.lastInsertRowid ?? 0), changes: res.rowsAffected };
   }
 };
