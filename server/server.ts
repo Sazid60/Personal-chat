@@ -804,6 +804,7 @@ io.on('connection', (socket: Socket) => {
 
   socket.on('call_response', ({ callerId, accepted }) => {
     const target = Number(callerId) || activeCalls.get(userId);
+    const pending = pendingCalls.get(userId);
 
     if (pendingCalls.has(userId)) {
       clearTimeout(pendingCalls.get(userId)!.timeoutId);
@@ -830,7 +831,8 @@ io.on('connection', (socket: Socket) => {
           io.to(sockId).emit('call_response', {
             responderId: userId,
             responderName: user.name,
-            accepted: true
+            accepted: true,
+            callType: pending?.callType || 'audio'
           });
         });
       }

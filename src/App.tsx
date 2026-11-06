@@ -36,7 +36,7 @@ import {
   Smile,
   SmilePlus,
   Sparkles,
-  Monitor
+  Download
 } from 'lucide-react';
 import { User, Conversation, Message, MediaMessage } from './types';
 import { ClientLoginSchema, ClientRegisterSchema } from './validators';
@@ -102,6 +102,7 @@ export function App() {
   const [gifSearchInput, setGifSearchInput] = useState('');
   const [gifs, setGifs] = useState<string[]>([]);
   const [isLoadingGifs, setIsLoadingGifs] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
   // Mobile View
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
@@ -113,6 +114,7 @@ export function App() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const typingTimeoutRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -171,6 +173,62 @@ export function App() {
   useEffect(() => {
     activeCallRef.current = activeCall;
   }, [activeCall]);
+
+  // Synchronize media elements whenever activeCall or streams update
+  useEffect(() => {
+    if (activeCall && webrtcRef.current) {
+      if (webrtcRef.current.localStream && localVideoRef.current && activeCall.callType === 'video') {
+        localVideoRef.current.srcObject = webrtcRef.current.localStream;
+        localVideoRef.current.play().catch(() => {});
+      }
+      if (webrtcRef.current.remoteStream) {
+        if (activeCall.callType === 'audio') {
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = webrtcRef.current.remoteStream;
+            remoteAudioRef.current.volume = isLoudRef.current ? 1.0 : 0.4;
+            remoteAudioRef.current.play().catch(() => {});
+          }
+        } else {
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = null;
+          }
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = webrtcRef.current.remoteStream;
+            remoteVideoRef.current.volume = isLoudRef.current ? 1.0 : 0.8;
+            remoteVideoRef.current.play().catch(() => {});
+          }
+        }
+      }
+    }
+  }, [activeCall?.status, activeCall?.callType]);
+
+  // Listen for PWA install prompt
+  useEffect(() => {
+    const handler = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice?.outcome === 'accepted') {
+        cyberToast.success('NEXUS App installed', 'PWA_OK');
+      }
+      setDeferredPrompt(null);
+    } else {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+      if (isIOS) {
+        cyberToast.info('To install: tap Share (⎋) below, then select "Add to Home Screen" (+)', 'INSTALL_IOS');
+      } else {
+        cyberToast.info('To install: click browser menu (⋮) and select "Install NEXUS / Add to Home Screen"', 'INSTALL_APP');
+      }
+    }
+  };
 
   // Handle URL query parameters and service worker messages for incoming calls
   useEffect(() => {
@@ -240,13 +298,28 @@ export function App() {
     const webrtc = new WebRTCManager(socket);
     webrtcRef.current = webrtc;
 
-    webrtc.onLocalStreamCallback = (stream) => {
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    webrtc.onLocalStreamCallback = (stream, callType) => {
+      if (localVideoRef.current && callType === 'video') {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
+      }
     };
     webrtc.onRemoteStreamCallback = (stream, callType) => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = stream;
-        remoteVideoRef.current.volume = (callType === 'video' || isLoudRef.current) ? 1.0 : 0.35;
+      if (callType === 'audio') {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = stream;
+          remoteAudioRef.current.volume = isLoudRef.current ? 1.0 : 0.4;
+          remoteAudioRef.current.play().catch((e) => console.warn('Audio play error:', e));
+        }
+      } else {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = null;
+        }
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = stream;
+          remoteVideoRef.current.volume = isLoudRef.current ? 1.0 : 0.8;
+          remoteVideoRef.current.play().catch((e) => console.warn('Video play error:', e));
+        }
       }
     };
     webrtc.onCallEndCallback = () => {
@@ -477,7 +550,7 @@ export function App() {
       } catch (_) {}
     });
 
-    socket.on('call_response', async ({ responderId, responderName, accepted }: any) => {
+    socket.on('call_response', async ({ responderId, responderName, accepted, callType }: any) => {
       stopRingtone();
       if ('vibrate' in navigator) navigator.vibrate(0);
       if (accepted) {
@@ -485,7 +558,7 @@ export function App() {
         setActiveCall((prev) => prev ? { ...prev, status: 'connected' } : null);
         try {
           const targetId = Number(responderId || currentCallPeerIdRef.current || activeCallRef.current?.targetUserId);
-          const type = activeCallRef.current?.callType || 'audio';
+          const type = callType || activeCallRef.current?.callType || 'audio';
           if (targetId) {
             await webrtcRef.current?.startCall(targetId, type);
           }
@@ -971,7 +1044,9 @@ export function App() {
     isLoudRef.current = defaultLoud;
     setIsVideoOff(callType === 'audio');
 
-    setActiveCall({ callType, targetUserId: targetId, name: activeConv.peer_name, status: 'outgoing' });
+    const newCall = { callType, targetUserId: targetId, name: activeConv.peer_name, status: 'outgoing' as const };
+    activeCallRef.current = newCall;
+    setActiveCall(newCall);
     socketRef.current?.emit('call_request', { targetUserId: targetId, callType });
     cyberToast.info(`Calling ${activeConv.peer_name}...`, 'SIG_CALL');
   };
@@ -991,7 +1066,9 @@ export function App() {
     isLoudRef.current = defaultLoud;
     setIsVideoOff(callType === 'audio');
 
-    setActiveCall({ callType, targetUserId: peerId, name: callerName, status: 'connected' });
+    const newCall = { callType, targetUserId: peerId, name: callerName, status: 'connected' as const };
+    activeCallRef.current = newCall;
+    setActiveCall(newCall);
     socketRef.current?.emit('call_response', { callerId: peerId, accepted: true });
     setIncomingCall(null);
 
@@ -1024,8 +1101,13 @@ export function App() {
 
     // Instantly dismiss call overlay & incoming alert on frame 0 -> returns straight to chat box
     setActiveCall(null);
+    activeCallRef.current = null;
     setIncomingCall(null);
     currentCallPeerIdRef.current = null;
+
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
 
     stopRingtone();
     if ('vibrate' in navigator) navigator.vibrate(0);
@@ -1296,6 +1378,22 @@ export function App() {
               </div>
             </form>
           )}
+
+          {/* Native PWA App Download */}
+          <div className="auth-download-section">
+            <div className="auth-divider">
+              <span>OR NATIVE APP</span>
+            </div>
+            <button
+              type="button"
+              className="btn-download-app"
+              onClick={handleInstallApp}
+              title="Download & Install NEXUS App"
+            >
+              <Download size={15} />
+              <span>DOWNLOAD NEXUS APP</span>
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -1308,6 +1406,7 @@ export function App() {
       <audio ref={audioCallRingtoneRef} loop src="/sounds/call-audio.mp3" preload="auto" />
       <audio ref={videoCallRingtoneRef} loop src="/sounds/call-video.mp3" preload="auto" />
       <audio ref={messageToneRef} src="/sounds/message.mp3" preload="auto" />
+      <audio ref={remoteAudioRef} autoPlay playsInline style={{ position: 'fixed', opacity: 0, pointerEvents: 'none' }} />
 
       {/* Left Sidebar */}
       <aside className={`sidebar ${mobileChatOpen ? 'mobile-hidden' : ''}`}>
@@ -1320,6 +1419,13 @@ export function App() {
             </div>
           </div>
           <div className="header-tools">
+            <button
+              className="tool-icon-btn text-[#00f0ff] cursor-pointer"
+              onClick={handleInstallApp}
+              title="Download NEXUS App / Install PWA"
+            >
+              <Download size={17} />
+            </button>
             <button className="tool-icon-btn" onClick={() => setShowNewChatModal(true)} title="Locate Node">
               <Plus size={18} />
             </button>
@@ -1497,34 +1603,66 @@ export function App() {
                   return (
                     <div key={m.id || idx} className={`msg-row ${isSent ? 'sent' : 'received'}`}>
                       <div className="msg-bubble-wrapper">
-                        {/* Reaction Trigger Button */}
+                        {/* Quick Action Deck (Reaction + Unsend) */}
                         {!isUnsent && (
-                          <button
-                            type="button"
-                            className={`reaction-trigger-btn ${activeReactionMenuId === (m.id || idx) ? 'active' : ''}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveReactionMenuId(activeReactionMenuId === (m.id || idx) ? null : (m.id || idx));
-                            }}
-                            title="Add reaction"
-                          >
-                            <SmilePlus size={14} />
-                          </button>
+                          <div className="msg-actions-deck">
+                            <button
+                              type="button"
+                              className={`reaction-trigger-btn ${activeReactionMenuId === (m.id || idx) ? 'active' : ''}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveReactionMenuId(activeReactionMenuId === (m.id || idx) ? null : (m.id || idx));
+                              }}
+                              title="Add reaction"
+                            >
+                              <SmilePlus size={14} />
+                            </button>
+
+                            {isSent && (
+                              <button
+                                type="button"
+                                className="msg-unsend-trigger-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleUnsend(m.id || idx);
+                                }}
+                                title="Unsend transmission for everyone"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </div>
                         )}
 
-                        {/* Reaction Menu Bar */}
+                        {/* Reaction Menu Bar with Emojis + Unsend Action */}
                         {activeReactionMenuId === (m.id || idx) && !isUnsent && (
                           <div className="reaction-menu-popover" onClick={(e) => e.stopPropagation()}>
-                            {['❤️', '👍', '😂', '😮', '😢', '🔥'].map((emoji) => (
+                            <div className="reaction-emojis-row">
+                              {['❤️', '👍', '😂', '😮', '😢', '🔥'].map((emoji) => (
+                                <button
+                                  key={emoji}
+                                  type="button"
+                                  className="reaction-emoji-btn"
+                                  onClick={() => handleSendReaction(m.id || idx, emoji)}
+                                >
+                                  {emoji}
+                                </button>
+                              ))}
+                            </div>
+                            {isSent && (
                               <button
-                                key={emoji}
                                 type="button"
-                                className="reaction-emoji-btn"
-                                onClick={() => handleSendReaction(m.id || idx, emoji)}
+                                className="reaction-unsend-item"
+                                onClick={() => {
+                                  handleUnsend(m.id || idx);
+                                  setActiveReactionMenuId(null);
+                                }}
+                                title="Unsend transmission for everyone"
                               >
-                                {emoji}
+                                <Trash2 size={13} />
+                                <span>Unsend</span>
                               </button>
-                            ))}
+                            )}
                           </div>
                         )}
 
@@ -1586,17 +1724,6 @@ export function App() {
                               </span>
                             )}
                           </div>
-
-                          {/* Unsend Action for text & media */}
-                          {isSent && !isUnsent && (
-                            <button
-                              className="msg-menu-btn"
-                              onClick={() => handleUnsend(m.id || idx)}
-                              title="Unsend transmission for everyone"
-                            >
-                              <Ban size={12} />
-                            </button>
-                          )}
                         </div>
 
                         {/* Reaction Badges beneath Bubble */}
@@ -1858,13 +1985,13 @@ export function App() {
 
             <div className="video-grid">
               <div className="video-box remote-box">
-                <video
-                  ref={remoteVideoRef}
-                  autoPlay
-                  playsInline
-                  style={activeCall.callType === 'audio' ? { position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' } : {}}
-                />
-                {activeCall.callType === 'audio' && (
+                {activeCall.callType === 'video' ? (
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                  />
+                ) : (
                   <div className="audio-avatar">
                     <Headset size={48} />
                     <div className="pulse-ring" />
@@ -1900,8 +2027,11 @@ export function App() {
                   const nextLoud = !isLoud;
                   setIsLoud(nextLoud);
                   isLoudRef.current = nextLoud;
+                  if (remoteAudioRef.current) {
+                    remoteAudioRef.current.volume = nextLoud ? 1.0 : 0.4;
+                  }
                   if (remoteVideoRef.current) {
-                    remoteVideoRef.current.volume = nextLoud ? 1.0 : 0.35;
+                    remoteVideoRef.current.volume = nextLoud ? 1.0 : 0.4;
                   }
                   cyberToast.info(nextLoud ? 'Speaker (Loud) ON' : 'Speaker (Normal) ON', 'AUDIO_OUT');
                 }}

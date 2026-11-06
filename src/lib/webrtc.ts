@@ -25,6 +25,7 @@ export class WebRTCManager {
   }
 
   public pendingOffer: any = null;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
 
   async startCall(targetUserId: number, callType: 'audio' | 'video') {
     this.targetUserId = targetUserId;
@@ -70,10 +71,24 @@ export class WebRTCManager {
     }
   }
 
+  private async drainPendingCandidates() {
+    if (!this.peerConnection || !this.peerConnection.remoteDescription) return;
+    for (const cand of this.pendingCandidates) {
+      try {
+        await this.peerConnection.addIceCandidate(new RTCIceCandidate(cand));
+      } catch (e) {
+        console.warn('Queued ICE candidate error:', e);
+      }
+    }
+    this.pendingCandidates = [];
+  }
+
   private async processOffer(signal: any) {
     if (!this.peerConnection) return;
     try {
       await this.peerConnection.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      await this.drainPendingCandidates();
+
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
 
@@ -102,14 +117,17 @@ export class WebRTCManager {
       try {
         if (this.peerConnection) {
           await this.peerConnection.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          await this.drainPendingCandidates();
         }
       } catch (err) {
         console.error('Error handling answer:', err);
       }
     } else if (signal.type === 'candidate') {
       try {
-        if (this.peerConnection && signal.candidate) {
+        if (this.peerConnection && this.peerConnection.remoteDescription) {
           await this.peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        } else {
+          this.pendingCandidates.push(signal.candidate);
         }
       } catch (err) {
         console.error('Error adding ICE candidate:', err);
@@ -119,8 +137,12 @@ export class WebRTCManager {
 
   async initLocalStream(callType: 'audio' | 'video') {
     const constraints: MediaStreamConstraints = {
-      audio: true,
-      video: callType === 'video' ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      },
+      video: callType === 'video' ? { facingMode: 'user' } : false
     };
 
     this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -144,9 +166,16 @@ export class WebRTCManager {
     };
 
     this.peerConnection.ontrack = (event) => {
-      this.remoteStream = event.streams[0];
-      if (this.onRemoteStreamCallback && this.currentCallType) {
-        this.onRemoteStreamCallback(this.remoteStream, this.currentCallType);
+      if (event.streams && event.streams[0]) {
+        this.remoteStream = event.streams[0];
+      } else {
+        if (!this.remoteStream) {
+          this.remoteStream = new MediaStream();
+        }
+        this.remoteStream.addTrack(event.track);
+      }
+      if (this.onRemoteStreamCallback) {
+        this.onRemoteStreamCallback(this.remoteStream, this.currentCallType || 'audio');
       }
     };
 
@@ -231,6 +260,7 @@ export class WebRTCManager {
 
       this.remoteStream = null;
       this.pendingOffer = null;
+      this.pendingCandidates = [];
       const prevType = this.currentCallType;
       const prevTarget = this.targetUserId;
       this.currentCallType = null;
