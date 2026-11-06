@@ -88,6 +88,11 @@ function authenticateToken(req: AuthRequest, res: Response, next: NextFunction) 
   });
 }
 
+// Lightweight Healthcheck endpoint (for keep-alive pings / UptimeRobot)
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.status(200).json({ status: 'active', timestamp: Date.now() });
+});
+
 // REST APIs: Register with Zod Validation
 app.post('/api/register', async (req: Request, res: Response) => {
   const parseResult = RegisterSchema.safeParse(req.body);
