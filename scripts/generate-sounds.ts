@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 
 const sampleRate = 44100;
 
@@ -92,16 +93,60 @@ function addModernChime(
   }
 }
 
-// 1. Modern Message Tone: Soft, ultra-satisfying bubbly acoustic dual-tap (Telegram/Slack style)
+// Ultra-soothing, warm, crystal-pure bell harmonics (zero harshness)
+function addCrystalBell(
+  outL: Float32Array,
+  outR: Float32Array,
+  startSec: number,
+  baseFreq: number,
+  durationSec: number,
+  gain = 0.30,
+  pan = 0.0
+) {
+  const startIdx = Math.floor(startSec * sampleRate);
+  const total = Math.floor(durationSec * sampleRate);
+
+  const harmonics = [
+    { mult: 1.0, amp: 1.0, decay: 6.0 },
+    { mult: 2.0, amp: 0.14, decay: 10.0 },
+    { mult: 3.0, amp: 0.03, decay: 16.0 }
+  ];
+
+  for (let i = 0; i < total; i++) {
+    const idx = startIdx + i;
+    if (idx >= outL.length) break;
+    const t = i / sampleRate;
+
+    // Gentle 10ms raised-cosine attack to eliminate sharp transients
+    const attack = Math.sin(Math.min(1, t / 0.010) * (Math.PI / 2));
+
+    let sample = 0;
+    for (const h of harmonics) {
+      const env = attack * Math.exp(-h.decay * t);
+      sample += Math.sin(2 * Math.PI * baseFreq * h.mult * t) * env * h.amp;
+    }
+
+    sample = sample * gain;
+
+    const panL = Math.cos((pan + 1) * Math.PI / 4);
+    const panR = Math.sin((pan + 1) * Math.PI / 4);
+
+    outL[idx] += sample * panL;
+    outR[idx] += sample * panR;
+  }
+}
+
+// 1. Modern Message Tone: Soothing 3-tone crystal harp / water chime (F5 -> A5 -> C6)
 function generateModernMessageTone(): Buffer {
-  const duration = 0.45;
+  const duration = 0.55;
   const numSamples = Math.floor(duration * sampleRate);
   const left = new Float32Array(numSamples);
   const right = new Float32Array(numSamples);
 
-  // Note 1: F5 (698.46 Hz) soft left, Note 2: C6 (1046.50 Hz) bright center-right
-  addModernChime(left, right, 0.00, 698.46, 0.35, 0.38, -0.15);
-  addModernChime(left, right, 0.08, 1046.50, 0.35, 0.42, 0.15);
+  // Soft triad arpeggio: F5 (698.46 Hz) -> A5 (880.00 Hz) -> C6 (1046.50 Hz)
+  addCrystalBell(left, right, 0.00, 698.46, 0.40, 0.28, -0.2);
+  addCrystalBell(left, right, 0.07, 880.00, 0.42, 0.30, 0.0);
+  addCrystalBell(left, right, 0.14, 1046.50, 0.48, 0.35, 0.2);
 
   return createWavBuffer(left, right);
 }
@@ -150,5 +195,18 @@ const outDir = path.join(process.cwd(), 'public', 'sounds');
 fs.writeFileSync(path.join(outDir, 'message.wav'), generateModernMessageTone());
 fs.writeFileSync(path.join(outDir, 'call-audio.wav'), generateModernAudioCallTone());
 fs.writeFileSync(path.join(outDir, 'call-video.wav'), generateModernVideoCallTone());
+
+// Convert wav files to high quality mp3
+const files = ['message', 'call-audio', 'call-video'];
+for (const file of files) {
+  const wavPath = path.join(outDir, `${file}.wav`);
+  const mp3Path = path.join(outDir, `${file}.mp3`);
+  try {
+    execSync(`ffmpeg -y -i "${wavPath}" -codec:a libmp3lame -qscale:a 2 "${mp3Path}"`, { stdio: 'ignore' });
+    console.log(`Converted ${file}.wav -> ${file}.mp3`);
+  } catch (err) {
+    console.warn(`ffmpeg conversion failed for ${file}:`, err);
+  }
+}
 
 console.log('Successfully synthesized Modern App acoustic sound files!');

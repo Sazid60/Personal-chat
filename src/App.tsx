@@ -36,7 +36,9 @@ import {
   Smile,
   SmilePlus,
   Sparkles,
-  Download
+  Download,
+  Smartphone,
+  Laptop
 } from 'lucide-react';
 import { User, Conversation, Message, MediaMessage } from './types';
 import { ClientLoginSchema, ClientRegisterSchema } from './validators';
@@ -103,6 +105,7 @@ export function App() {
   const [gifs, setGifs] = useState<string[]>([]);
   const [isLoadingGifs, setIsLoadingGifs] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallGuide, setShowInstallGuide] = useState(false);
 
   // Mobile View
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
@@ -147,7 +150,54 @@ export function App() {
     } catch (_) {}
   };
 
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  const getAudioContext = () => {
+    if (!audioCtxRef.current) {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        audioCtxRef.current = new AudioCtx();
+      }
+    }
+    if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume().catch(() => {});
+    }
+    return audioCtxRef.current;
+  };
+
   const playMessageTone = () => {
+    // 1. Soothing 3-tone crystal harp arpeggio via Web Audio API (zero harshness)
+    try {
+      const ctx = getAudioContext();
+      if (ctx) {
+        const now = ctx.currentTime;
+        // Soft triad arpeggio: F5 (698.46 Hz) -> A5 (880.00 Hz) -> C6 (1046.50 Hz)
+        const notes = [
+          { freq: 698.46, start: 0.00, dur: 0.35, vol: 0.16 },
+          { freq: 880.00, start: 0.07, dur: 0.38, vol: 0.18 },
+          { freq: 1046.50, start: 0.14, dur: 0.45, vol: 0.22 },
+        ];
+        notes.forEach(({ freq, start, dur, vol }) => {
+          const osc = ctx.createOscillator();
+          const gainNode = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + start);
+
+          gainNode.gain.setValueAtTime(0.0001, now + start);
+          gainNode.gain.exponentialRampToValueAtTime(vol, now + start + 0.012);
+          gainNode.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
+
+          osc.connect(gainNode);
+          gainNode.connect(ctx.destination);
+
+          osc.start(now + start);
+          osc.stop(now + start + dur);
+        });
+        return;
+      }
+    } catch (_) {}
+
+    // 2. Fallback to HTML Audio element
     try {
       if (messageToneRef.current) {
         messageToneRef.current.volume = 0.45;
@@ -214,20 +264,102 @@ export function App() {
 
   const handleInstallApp = async () => {
     if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const choice = await deferredPrompt.userChoice;
-      if (choice?.outcome === 'accepted') {
-        cyberToast.success('NEXUS App installed', 'PWA_OK');
+      try {
+        deferredPrompt.prompt();
+        const choice = await deferredPrompt.userChoice;
+        if (choice?.outcome === 'accepted') {
+          cyberToast.success('NEXUS App installed successfully', 'PWA_OK');
+        }
+        setDeferredPrompt(null);
+      } catch (_) {
+        setShowInstallGuide(true);
       }
-      setDeferredPrompt(null);
     } else {
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
-      if (isIOS) {
-        cyberToast.info('To install: tap Share (⎋) below, then select "Add to Home Screen" (+)', 'INSTALL_IOS');
-      } else {
-        cyberToast.info('To install: click browser menu (⋮) and select "Install NEXUS / Add to Home Screen"', 'INSTALL_APP');
-      }
+      setShowInstallGuide(true);
     }
+  };
+
+  const renderInstallGuideModal = () => {
+    if (!showInstallGuide) return null;
+    return (
+      <div className="modal-overlay" onClick={() => setShowInstallGuide(false)}>
+        <div className="card modal-content install-guide-card" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <div className="modal-title-wrap">
+              <Download className="text-[#00f0ff]" size={20} />
+              <h3 className="modal-title">DOWNLOAD NEXUS APP</h3>
+            </div>
+            <button
+              className="modal-close-btn"
+              onClick={() => setShowInstallGuide(false)}
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="install-guide-body">
+            <p className="install-guide-lead">
+              Install NEXUS directly on your device for instant launch, background incoming call alerts, and full screen secure comms.
+            </p>
+
+            <div className="install-platform-list">
+              <div className="platform-card">
+                <div className="platform-icon">
+                  <Smartphone size={22} className="text-[#00f0ff]" />
+                </div>
+                <div className="platform-info">
+                  <h4>Android (Chrome / Edge)</h4>
+                  <p>Tap menu <strong>⋮</strong> at top-right, then select <strong>"Install app"</strong> or <strong>"Add to Home screen"</strong>.</p>
+                </div>
+              </div>
+
+              <div className="platform-card">
+                <div className="platform-icon">
+                  <Smartphone size={22} className="text-[#a78bfa]" />
+                </div>
+                <div className="platform-info">
+                  <h4>iPhone / iPad (Safari)</h4>
+                  <p>Tap the <strong>Share</strong> button (⎋) at the bottom, then tap <strong>"Add to Home Screen" (+)</strong>.</p>
+                </div>
+              </div>
+
+              <div className="platform-card">
+                <div className="platform-icon">
+                  <Laptop size={22} className="text-[#38bdf8]" />
+                </div>
+                <div className="platform-info">
+                  <h4>Desktop (Chrome / Edge / Windows / Mac)</h4>
+                  <p>Click the <strong>Install</strong> icon in the address bar (⤓ or ⊕), or menu <strong>⋮ → "Install NEXUS"</strong>.</p>
+                </div>
+              </div>
+            </div>
+
+            {deferredPrompt && (
+              <button
+                type="button"
+                className="btn btn-primary btn-block install-trigger-btn"
+                onClick={() => {
+                  deferredPrompt.prompt();
+                  setShowInstallGuide(false);
+                }}
+              >
+                <Download size={16} /> Tap to Launch Install Prompt
+              </button>
+            )}
+          </div>
+
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowInstallGuide(false)}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   // Handle URL query parameters and service worker messages for incoming calls
@@ -1208,8 +1340,26 @@ export function App() {
 
   if (!token || !currentUser) {
     return (
-      <div className="screen-modal active">
+      <div className="screen-modal active auth-screen-wrapper">
         <Toaster />
+
+        {/* Startup Top Header Bar */}
+        <header className="auth-startup-bar">
+          <div className="startup-brand">
+            <Atom size={20} className="brand-pulse-cyan" />
+            <span className="startup-brand-title">NEXUS // QUANTUM COMMS</span>
+          </div>
+          <button
+            type="button"
+            className="btn-startup-download"
+            onClick={handleInstallApp}
+            title="Download & Install NEXUS App"
+          >
+            <Download size={14} />
+            <span>DOWNLOAD APP</span>
+          </button>
+        </header>
+
         <div className="card auth-card">
           <div className="brand">
             <div className="brand-icon-wrapper">
@@ -1395,6 +1545,7 @@ export function App() {
             </button>
           </div>
         </div>
+        {renderInstallGuideModal()}
       </div>
     );
   }
@@ -2281,6 +2432,9 @@ export function App() {
           </div>
         </div>
       )}
+
+      {/* PWA Install Guide Modal */}
+      {renderInstallGuideModal()}
     </div>
   );
 }
